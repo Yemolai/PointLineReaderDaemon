@@ -1,0 +1,31 @@
+{
+  "name": "pointline-daemon",
+  "version": "1.0.0",
+  "description": "Gerenciador de extração de dados de ponto",
+  "main": "index.js",
+  "scripts": {
+    "create-db": "sequelize db:migrate && sequelize db:seed:all",
+    "start": "node index.js",
+    "reset": "sequelize db:migrate:undo:all && npm run create-db",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://bitbucket.org/Yemolai/pointlinedaemon.git"
+  },
+  "keywords": [
+    "ponto",
+    "daemon",
+    "sql",
+    "banco",
+    "pointline"
+  ],
+  "author": "Romulo Gabriel Rodrigues",
+  "license": "MIT",
+  "homepage": "https://bitbucket.org/Yemolai/ponto#readme",
+  "dependencies": {
+    "moment": "^2.22.2",
+    "mysql2": "^1.6.1",
+    "sequelize": "^4.38.0"
+  }
+}
