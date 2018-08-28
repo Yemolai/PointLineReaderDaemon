@@ -2,11 +2,10 @@
 const { spawn } = require('child_process');
 const moment = require('moment');
 const db = require('./database/models/');
-const debugFn = require('./debug');
+const debug = require('./debug');
 const config = require('./config.json');
 
 // constants
-const debug = 'debug' in config && config.debug === true;
 const defaultModel = 2; // "2 - PointLine BIOPROX"
 const args = config.cli.args;
 const h = config.cli.output;
@@ -42,42 +41,68 @@ const path = config.cli.path;
 // só pra fazer um filter ficar mais legível
 const emptyIDsOut = v => v.id.length > 1 || Number(v.nsr) === 0;
 
-const createReaders = () => db.Marcacao
-  .findAll({
-    attributes: [
-      'id',
-      [
-        db.sequelize.fn('max', db.sequelize.col('nsr')),
-        'lastNSR'
+const createReaders = (offline) => {
+  debug.log('creating readers...');
+  return db.Marcacao
+    .findAll({
+      attributes: [
+        'id',
+        [
+          db.sequelize.fn('max', db.sequelize.col('nsr')),
+          'lastNSR'
+        ],
+        'ponto'
       ],
-      'ponto'
-    ],
-    group: 'ponto',
-    include: [{
-      as: 'Ponto',
-      model: db.Ponto,
-      where: { id: db.sequelize.col('ponto') }
-    }]
-  })
-  .map(function (res) {
-    config.debug ? console.log('rel', res.Ponto.nome, 'last:', res.dataValues.lastNSR) : null;
-    return {
-      id: res.Ponto.id,
-      model: res.dataValues.model || defaultModel,
-      nome: res.Ponto.nome,
-      ip: res.Ponto.ip,
-      offset: res.dataValues.lastNSR
-    }
-  })
-  .map(function (relogio) {
-    const endpoint = Object.keys(config.endpoints)
-      .filter(k => config.endpoints[k].id === relogio.id)
-      .reduce((p, a) => a, {});
-    return pointLineReader(Object.assign(endpoint, relogio));
-  })
-  .catch(function (err) {
-    debug ? console.error('Rolou um erro ae:', err) : null;
-  });
+      group: 'ponto',
+      include: [{
+        as: 'Ponto',
+        model: db.Ponto,
+        where: { id: db.sequelize.col('ponto') }
+      }]
+    })
+    .then(results => {
+      debug.dump('results', results);
+      if (results === null) {
+        const err = { msg: 'Query retornou vazia. Verifique se banco de dados está ativo.' };
+        throw err;
+      }
+      return results;
+    })
+    .map(res => {
+      debug.log('rel', res.Ponto.nome, 'last:', res.dataValues.lastNSR);
+      return {
+        id: res.Ponto.id,
+        model: res.dataValues.model || defaultModel,
+        nome: res.Ponto.nome,
+        ip: res.Ponto.ip,
+        offset: res.dataValues.lastNSR
+      }
+    })
+    .map(function (relogio) {
+      const endpoint = Object.keys(config.endpoints)
+        .filter(k => config.endpoints[k].id === relogio.id)
+        .reduce((p, a) => a, {});
+      return pointLineReader(Object.assign(endpoint, relogio));
+    })
+    .then(v => {
+      if (offline.get()) {
+        debug.log(true, true, 'Database back online');
+        offline.set(false);
+      }
+      return v;
+    })
+    .catch(function (err) {
+      if ('name' in err && err.name === 'SequelizeConnectionRefusedError') {
+        if (offline.get() !== true) {
+          let server = err.original.address + ':' + err.original.port;
+          debug.err(true, true, err.name, server);
+          offline.set(true);
+        }
+      }
+      debug.err('Ocorreu um erro:', err);
+      return [];
+    });
+}
 
 const pointLineReader = function (endpoint) {
   const execArgs = [
@@ -90,17 +115,14 @@ const pointLineReader = function (endpoint) {
   ];
   const reader = spawn(path, execArgs, execOpts);
   reader.stderr.on('data', err => {
-    if (debug) {
-      const nome = endpoint.name || endpoint.nome;
-      console.error(`Err@${nome}-${isoDate()}\r\nstderr:`, err);
-    }
+    const nome = endpoint.name || endpoint.nome;
+    debug.err(`Err@${nome}-${isoDate()}\r\nstderr:`, err);
   });
-  if (debug) { // if we are debugging:
-    debugFn.pointLineReader(endpoint, reader);
-  }
+  debug.pointLineReader(endpoint, reader);
   reader.stdout.on('data', data => {
-    if ((`${data}`).trim().length < 1) return null;
+    if ((`${data}`).trim().length < 1) return false;
     const lines = (`${data}`).split('\n');
+    debug.dump('lines', lines);
     // arruma o csv em um array de objetos, removendo linhas em branco
     const list = lines
       .map(line => {
@@ -109,6 +131,7 @@ const pointLineReader = function (endpoint) {
           .reduce(toObj(h), {});
       })
       .filter(emptyIDsOut);
+    debug.dump('list', list);
     // formata os dados de cada objeto para seus respectivos tipos corretos
     const table = list.map(marcacao => ({ // remove o id e
       ponto: endpoint.id,
@@ -116,22 +139,22 @@ const pointLineReader = function (endpoint) {
       datetime: moment(marcacao.datetime).format(),
       pis: marcacao.pis // relacionamento com funcionarios
     }));
-    // TODO: Inserir cada objeto de table no banco 
+    debug.dump('table', table);
+    // TODO: Inserir cada objeto de table no banco
     return table
       .map((marcacao, idx) => db.Funcionario
         .findCreateFind({
           where: { pis: marcacao.pis },
           defaults: { pis: marcacao.pis, createdAt: isoDate() }
         })
+        .then(f => { if (f === null) { throw 'empty query funcionario' } else { return f }})
         .then(funcionario => db.Marcacao.findOrCreate({
           where: { nsr: marcacao.nsr, ponto: endpoint.id },
           defaults: marcacao
         }))
-        .then(function () {
-          return true;
-        })
+        .then(m => { if (m === null) { throw 'cannot create marcacao' } else { return m } })
         .catch(function (err) {
-          debug ? console.error('Deu ruim:', err) : null;
+          debug.err('Deu ruim:', err);
           return false;
         })
       )
