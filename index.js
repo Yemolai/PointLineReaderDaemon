@@ -1,6 +1,5 @@
 'use strict';
 // libraries, functions and utilities
-const moment = require('moment');
 const debug = require('./debug');
 const config = require('./config.json');
 const { createReaders } = require('./pointLineReader');
