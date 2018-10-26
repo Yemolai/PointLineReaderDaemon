@@ -1,5 +1,6 @@
 database/config/*
 database/_seeders/
+database/files/*
 node_modules
 .env
 config.json
